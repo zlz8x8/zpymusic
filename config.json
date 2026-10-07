@@ -1,0 +1,48 @@
+{
+  "paths": {
+    "musescore": null,
+    "ffmpeg": null,
+    "fluidsynth_dir": null,
+    "verovio_resources": null
+  },
+  "audio": {
+    "default_soundfont": "sound/MuseScore_General.sf3",
+    "sample_rate": 44100,
+    "gain": 0.6,
+    "reverb": true,
+    "chorus": true,
+    "keep_wav": false,
+    "mp3_bitrate_kbps": 192
+  },
+  "render": {
+    "engine": "verovio",
+    "scale": 100,
+    "page_width": 2100,
+    "breaks": "smart",
+    "page_height": 1500,
+    "adjust_page_height": true,
+    "single_page": false,
+    "max_page_height": 60000,
+    "svg_additional_attributes": [
+      "note@pname",
+      "note@oct",
+      "note@dur"
+    ],
+    "footer": "none",
+    "header": "none",
+    "include_rests_in_sync": false,
+    "max_systems": 0
+  },
+  "ui": {
+    "tab_position": "west",
+    "highlight_color": "#0000ff",
+    "highlight_opacity": 0.35,
+    "follow_playback": true,
+    "score_backend": "auto",
+    "skip_fidelity_prompts": [],
+    "convert_name_template": "{base}"
+  },
+  "musicxml_dir": "C:\\MyCodes\\py-space\\zpymusic\\staff\\musicxml",
+  "suites_dir": "C:\\MyCodes\\py-space\\zpymusic\\staff\\suites",
+  "overwrite_policy": "skip"
+}

@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest-tmp/
+.pytest_cache/
+pytest-cache-files-*/
+.venv/
+venv/
+# 项目内临时目录：WebEngine 探测脚本、源文件预览的渲染 / 试听缓存
+.zpy-tmp/
+# 音色库文件，太大
+sound/FluidR3_GM2-2.SF2
+# --- zpyMusic 运行产物 ---
+# 生成的套件体积很大（10 个样本约 145 MB，含 MP3/MPEG 音频），按需决定是否入库
+staff/suites/
+# 中间 WAV（默认生成后即删除，开启"保留 WAV"时会出现）
+staff/**/*.wav
+logs/
+*.log
+
+# --- 外部二进制运行时（体积大，建议按 README 自行下载放置）---
+tools/fluidsynth/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
