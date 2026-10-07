@@ -3,6 +3,10 @@
 以 **MusicXML 为权威数据源**的曲谱工具：生成 `svg / midi / mp3 / sync.json` 套件，并在播放时于
 SVG 曲谱上**同步高亮当前音符**。
 
+A sheet-music tool that takes **MusicXML as the authoritative data source**: it generates an
+`svg / midi / mp3 / sync.json` suite and **highlights the current note in sync** on the SVG score
+during playback.
+
 需求说明书见 [`docs/requirements.md`](docs/requirements.md)（v2.1，含 M0–M2 实测回填）。
 
 ---
