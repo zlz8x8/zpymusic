@@ -152,7 +152,8 @@ $out = $probe | & $py - 2>&1 | Out-String
 Clear-GlEnv
 ```
 
-实测输出（PySide6 6.9.3 / Qt 6.9.3，Windows）：
+实测输出（**当时环境**：PySide6 6.9.3 / Qt 6.9.3，Windows；当前环境已升级为
+PySide6 6.12.0 / Qt 6.12.0，下表保留为历史实测记录）：
 
 | 变量 | GPU 报错 | 谱面 |
 | :--- | :--- | :--- |
@@ -272,6 +273,7 @@ Chromium 用命名管道做多进程 IPC。在受限沙箱 / 受管环境里创�
   套件 A→B→A 连续切换 **0 行加载失败**；
 * `tools/check_gui_launch.py`：曲谱视图后端 = `WebScoreView`，stderr **无任何 `gpu_channel_manager` 报错**；
 * `pytest -q`：**338 项全部通过**（含本次新增 17 项；补齐缩放接口后为 **364 项**，见 §9.1）。
+  （以上为 **M6 当时的**数字；2026-10-08 环境升级后为 **370 项全部通过**，见 §12。）
 
 > ⚠ **一个必须诚实记录的负面结果**：两个 profile 的 `scroll_ms` **基本一致**（比值 ≈ 1.0）。
 > 这条路径的耗时由"取回 + 解析 + 栅格化 60 张 SVG"主导，都在 CPU 侧。
@@ -428,3 +430,90 @@ $env:QT_QPA_PLATFORM = "offscreen"; & $py tools\check_gui_launch.py
 | M6 | 重写环境策略（默认不关 GPU + 两段式探测 + 失败分类）、修复坏掉的排障工具、默认后端改 `auto` |
 | M6 | 新增 17 项回归测试与对比基准；338 项测试全绿；文档按实测改写 |
 | M6（随后） | 默认后端改 `auto` 后**立刻**暴露「适应宽度」失效 —— 实为两个后端接口不一致导致的静默降级（§9.1），另修掉页面居中布局"左边缘滚不回来"。新增 25+1 项回归测试，总计 **364 项全绿**（受限沙箱与可启动 Chromium 两种环境下各跑一遍都通过） |
+| 2026-10-08 | 运行环境升级（Python 3.13.16 → **3.14.7**，PySide6 6.9.3 → **6.12.0** / Qt 6.12.0）后全量复验，见下节 |
+
+---
+
+## 12. 2026-10-08 环境升级复验（Qt 6.9.3 → 6.12.0）
+
+环境升级后重跑了本文档涉及的全部检查。**关于 GPU 报错与后端选择的结论不变**，
+但有几处需要记录：
+
+### 12.1 GPU 报错结论仍然成立，本次无法复测 GPU 路径
+
+`tools/diagnose_web_switch.py` 在本次（受管沙箱）会话下的输出：
+
+```text
+is_webengine_available() = False
+profile                  = default
+失败原因分类             = pipe
+```
+
+即 Chromium 仍是在 §4.4 那条**命名管道限制**（`named-platform-channel-pipe ... 拒绝访问`）
+上倒下，**与 GPU / 显卡无关**，程序按设计自动回退 `NativeScoreView`。
+因此"默认 profile 不得报 GPU 错"这类**需要真正启动 Chromium**的验收，
+本次只能在受限沙箱下验证其**回退分支**：
+
+* `tools/check_gui_launch.py` → 后端 = `NativeScoreView`，PASSED；
+* `tools/smoke_play.py`（canon / four-seasons）→ 各 28/28，PASSED。
+
+> 要复测 GPU 路径，请在**普通桌面（自己的终端 / IDE）**里跑 §10 的第 1、2 条命令。
+> 受限沙箱里看到的 `pipe` 分类是预期的，不要据此改代码。
+
+### 12.2 新增一条"上游把坑填了"的记录：QtSvg 现在支持内嵌 CSS
+
+Qt 6.12.0 的 QtSvg **开始套用内嵌 CSS 规则并解析 `currentColor`**，
+于是 README「坑 10」里那个"谱线必须内联 `stroke` 才可见"的上游限制**已不复存在**。
+
+对照实验（`the-four-seasons-complete/svg/sys-0001.svg`，2100×1040）：
+
+| 处理 | 深色像素 | 横贯谱线行数 |
+| :--- | ---: | ---: |
+| `flatten_svg(inline_stroke=True)` | 211651 | 60 |
+| `flatten_svg(inline_stroke=False)` | 211204 | 60 |
+
+最小复现（证明它真的在做 CSS 选择器匹配，而非"默认补了黑描边"）：
+
+| SVG 内容 | 是否成像 |
+| :--- | :--- |
+| `<path .../>`（无 CSS、无 `stroke`） | **否**（0 像素） |
+| `<style>#zz path{stroke:currentColor}</style>` + `<path .../>` | **是**（3040 像素） |
+| 同上但选择器改为不匹配的 `#nope` | **否**（0 像素） |
+| `<style>#zz path{stroke:black}</style>` + `<path .../>` | **是** |
+
+**影响**：
+
+* `sync/svg_geometry.py::inline_stroke_attributes()` 现为**冗余但无害**的兼容保险 ——
+  它幂等、且只在元素"整段开标签里没有 `stroke="..."`"时才补，不会覆盖 Verovio 指定的颜色。
+  **建议保留**，以便在 Qt < 6.12 上仍能正确显示谱线。
+* `tests/test_m4_playback.py::TestStaffLinesRender::test_without_inline_stroke_lines_are_missing`
+  原本会**失败** —— 它是一条*反向护栏*，断言的正是"不内联就必须看不见"这个**已被修复的
+  上游缺陷**。**已按 Qt 版本改写**：新增 `qt_svg_applies_embedded_css()`（分界 `(6, 12)`），
+  `< 6.12` 断言"不内联则谱线不可见"，`>= 6.12` 断言"不内联也可见"。
+  两路都在断言可观测事实，任一侧翻转即失败 —— 既守住旧版行为，也能在上游再次回归时立刻发现。
+  改后 `pytest -q` 为 **370 项全部通过**（0 失败 / 0 跳过）。
+
+### 12.3 新增两类无害的 Qt 6.12 SVG 解析告警
+
+```text
+QFont::setPointSizeF: Point size <= 0 (0.000000), must be greater than 0
+<input>:60:46: Could not add child element to parent element because the types are incorrect.
+```
+
+排查结论（`qInstallMessageHandler` 逐条捕获 + 与 `QT_QPA_PLATFORM=offscreen|windows` 对照）：
+
+* **两类告警在两种平台下完全一致**（`offscreen` 15 条 / `windows` 14 条，差的 1 条是
+  offscreen 专有的 `QFontDatabase: Cannot find font directory`）—— 不是测试环境伪影，
+  但**也无害**：同一次渲染的深色像素为 153552 / 153553，无差异。
+* `font-size="0px"` 出现在 **Verovio 自己的原始输出**里（6 处），
+  形如 `<text ... font-size="0px"><tspan class="text"><tspan font-size="405px">Violin</tspan>…`，
+  是声部标签占位；外层 0px 触发 `QFont` 告警，实际字号由内层 `tspan` 提供。
+  这些标签的 y 坐标（1227/3027/…）超出单行 SVG 的高度（1040），本就落在画布外。
+* "Could not add child element" 指向的正是这些嵌套 `<tspan>`；单独复现同样的嵌套结构
+  **不会**告警，也**能正常渲染**（405px 文本 → 11338 深色像素）。
+* 另有 1 条 offscreen 专有、无关注告警：`QFontDatabase: Cannot find font directory .../PySide6/lib/fonts`。
+
+**肉眼复核**：把 `the-four-seasons-complete` 的 `sys-0001.svg` 渲染结果裁切存 PNG 后目视检查 ——
+五线谱谱线、符头、符干、符尾、连音线、谱号（高音/中音/低音）、调号、拍号、
+力度记号（`ff`/`mf`/`p`/`f`/`mp`）**全部正确成像**，无缺失。
+

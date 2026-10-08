@@ -31,7 +31,7 @@ during playback.
 | `sync.json` 音符 ID ↔ SVG 一致性 | **43281 个事件 100% 命中** |
 | MIDI 与时间轴同源校验 | 误差 2–16 ms |
 | 高亮起点 ↔ MIDI note-on 对齐 | **10/10 套件 100% 命中**（±100 ms） |
-| 单元测试 | **364 项通过** |
+| 单元测试 | **370 项全部通过** |
 | M4 播放冒烟测试 | 28 项检查 × 3 个套件（含 276 行的 four-seasons）全部通过 |
 | 懒加载性能（four-seasons 276 行） | 载入 79 ms；单行挂载 9–22 ms；滚动挂载 60 行 1.17 s |
 
@@ -39,16 +39,55 @@ during playback.
 
 ## 运行环境
 
-已在本机验证：
+已在本机验证（**当前环境：Python 3.14.7 / PySide6 6.12.0**，2026-10-08 升级后已全量复验，
+见下文「环境升级复验记录」）：
 
 | 项 | 值 |
 | :--- | :--- |
-| Python | 3.13.16 @ `C:\miniconda3\envs\ibase\python.exe` |
-| 依赖 | `verovio 6.3.0`、`music21 10.5.0`、`pyfluidsynth 1.4.0`、`PySide6 6.9.3`、`mido 1.3.3`、`numpy`、`scipy`、`pytest` |
+| Python | **3.14.7** @ `C:\miniconda3\envs\ibase\python.exe`（Anaconda，`MSC v.1942 64 bit (AMD64)`；`C:\miniconda3\envs` 下唯一环境 `ibase`） |
+| GUI 框架 | **PySide6 6.12.0**（`PySide6_Essentials` / `PySide6_Addons` 6.12.0、`PySide6_WebEngine` 6.12.0.140、`PySide6_Pdf` 6.12.0.140、`shiboken6 6.12.0`）→ **Qt 6.12.0** |
+| 依赖 | `verovio 6.3.0`、`music21 10.5.0`、`pyfluidsynth 1.4.0`、`mido 1.3.3`、`numpy 2.5.3`、`scipy 1.18.1` |
+| 测试工具 | `pytest 9.1.1`、`pytest-qt 4.5.0`、`setuptools 84.0.0` |
 | FluidSynth | `tools/fluidsynth/`（`fluidsynth.exe`、`libfluidsynth-3.dll`、`SDL3.dll`、`sndfile.dll`，2.6.1） |
-| ffmpeg | `C:\ffmpeg\bin\ffmpeg.exe`（含 `libmp3lame`） |
+| ffmpeg | `C:\ffmpeg\bin\ffmpeg.exe`（`N-122544-g8966101fa6-20260125`，含 `libmp3lame`） |
 | MuseScore | `C:\Program Files\MuseScore 4\bin\MuseScore4.exe`（PDF 导出用，M5） |
-| 音色库 | `sound/`（默认 `MuseScore_General.sf3`，MIT） |
+| 音色库 | `sound/`（5 个 `.sf2/.sf3`；默认 `MuseScore_General.sf3`，MIT） |
+
+> **Python 3.14 说明**：`pyproject.toml` 的 `requires-python = ">=3.11"` 已覆盖 3.14，
+> 无需改动；`verovio 6.3.0` 是 `cp310-abi3` 轮子，在 3.14 上照常加载。
+> **注意 `python` 命令**：PATH 上的 `python.exe` 是 Windows 商店占位程序（`WindowsApps`），
+> 直接敲 `python` 会静默失败（退出码 1、无输出）。**必须用绝对路径**调用 `ibase` 解释器。
+
+### 环境升级复验记录（2026-10-08，3.13.16/6.9.3 → 3.14.7/6.12.0）
+
+| 检查 | 命令 | 结果 |
+| :--- | :--- | :--- |
+| 依赖自检 | `python -m zpymusic probe` | **6/6 全部可用**（verovio 6.3.0 / fluidsynth 2.6.1 / ffmpeg / MuseScore 4 / music21 10.5.0 / 5 个音色库） |
+| 套件交叉验收 | `python tools/verify_suites.py` | **10/10 套件、43281 个事件 100% 命中**；ID 一致 / MIDI 同源（2–16 ms）/ 音频未截断 / note-on 对齐全通过 |
+| M4 播放冒烟 | `python tools/smoke_play.py` | `canon-in-d-easy` 与 `the-four-seasons-complete` **各 28/28 通过** |
+| GUI 启动 | `python tools/check_gui_launch.py` | PASSED（三标签页、日志 Dock、曲谱视图后端、图标均正常） |
+| GUI 自检 | `python src/zpymusic/gui.py --selftest` | PASSED（真实 `windows` 平台，UI 导入链 OK） |
+| 端到端生成 | `python -m zpymusic generate <源> -o <绝对路径>` | 成功：SVG / MIDI / `sync.json` / MP3 齐全，音频 **27.6× 实时** |
+| 套件校验 | `python -m zpymusic validate <套件根>` | OK |
+| 单元测试 | `python -m pytest -q` | **370 项全部通过**（0 失败 / 0 跳过，27 s） |
+
+**升级后处置**（下面两项均已确认并处理完毕）
+
+1. **`tests/test_m4_playback.py` 的反向护栏测试已按 Qt 版本更新**（原先在新环境下失败）。
+   它断言"不内联 `stroke` 时谱线必须看不见"，用来反证 `flatten_svg(inline_stroke=True)`
+   这个修补是必要的。实测 **Qt 6.12.0 的 QtSvg 已支持内嵌 CSS 规则并解析 `currentColor`**，
+   该前提不再成立（对照实验：`sys-0001.svg` 内联 211651 深色像素 / 不内联 211204，
+   横贯谱线都是 60 行；最小复现中 `#id path{stroke:currentColor}` 生效、
+   把选择器改成不匹配的 `#nope` 则完全不画 —— 证明它真的在做选择器匹配）。
+   现在该测试**按 Qt 版本分两路断言**（`< 6.12` 断言不可见、`>= 6.12` 断言可见），
+   两路都在断言可观测事实，任一侧翻转即失败。**程序渲染功能本身一直是正常的**，
+   且 `inline_stroke_attributes()` 现为**冗余但无害**的兼容保险（保留以支持 Qt < 6.12）。
+   详见下方「坑 10」。
+2. **`-o/--suites-dir` 传相对路径时音频渲染会失败**（`fluidsynth: fluid_is_soundfont(): fopen() failed`）。
+   原因是 `core/audio_render.py` 为了找同级 DLL 把子进程 `cwd` 设成了 `tools/fluidsynth/`，
+   于是相对路径的 `.mid` 被解析到了那个目录下。**传绝对路径即正常**（本文档所有命令都用绝对路径）。
+   该问题与 Python / Qt 版本无关，是既有的路径处理缺陷，仅在使用相对输出目录时触发
+   —— **尚未修改**，如需修复请另行确认。
 
 首次使用先自检：
 
@@ -134,7 +173,8 @@ ERROR:gpu_channel_manager.cc(967) ContextResult::kFatalFailure:
 旧版本在启动时无条件注入 `--disable-gpu` 与 `QT_QUICK_BACKEND=software`，报错就是它们
 发出来的。现在默认不再注入，报错随之消失。
 
-同一台机器、同一解释器的对照实验（PySide6 6.9.3 / Qt 6.9.3，加载同一套件前 6 行 SVG）：
+同一台机器、同一解释器的对照实验（**当时的** PySide6 6.9.3 / Qt 6.9.3；当前环境已升级为
+6.12.0，下表为历史实测记录，加载同一套件前 6 行 SVG）：
 
 | 实验 | 环境 | GPU 报错 | 谱面 |
 | :--- | :--- | :--- | :--- |
@@ -284,7 +324,7 @@ zpymusic/
 Set-Location "C:\MyCodes\py-space\zpymusic"
 $py = "C:\miniconda3\envs\ibase\python.exe"
 
-# 单元测试（155 项：时间轴/高亮、SVG 几何与谱线渲染、播放状态机、sync.json 契约、MusicXML 解析、GM 音色）
+# 单元测试（370 项：时间轴/高亮、SVG 几何与谱线渲染、播放状态机、sync.json 契约、MusicXML 解析、GM 音色）
 & $py -m pytest -q
 
 # 套件交叉验收（10 个套件：ID 一致性 / MIDI 同源 / 音频未截断 / 高亮起点对齐）
@@ -334,10 +374,21 @@ $env:QT_QPA_PLATFORM = "offscreen"; & $py tools\smoke_play.py the-four-seasons-c
    Python 包装被 GC 后会留下悬垂指针并崩溃。现用 `item.setData(0, renderer)` 持有。
 10. **原生后端必须内联 `stroke`，否则五线谱的线全都看不见** —— Verovio 的谱线是
     `<path d="M1510 620 L7382 620" stroke-width="13"/>`，**没有 stroke 属性**，
-    颜色来自内嵌 CSS `#id path {stroke:currentColor}`。QtSvg 不套用这条 CSS 规则，
+    颜色来自内嵌 CSS `#id path {stroke:currentColor}`。当年的 QtSvg 不套用这条 CSS 规则，
     于是谱线没有描边（线条没有面积 → 完全不可见），而符头是实心字形所以照样显示 ——
     现象就是**"音符看得见、五线谱没线"**。`flatten_svg()` 现在会内联 stroke：
     深色像素 4501 → 9379，横贯谱线 0 → **5 条**。
+
+    > **Qt 6.12.0 起这条坑已被上游填平**（2026-10-08 复验）：QtSvg 现在**会**套用内嵌 CSS
+    > 并解析 `currentColor`。对照实验（`the-four-seasons-complete/svg/sys-0001.svg`）：
+    > 内联 211651 深色像素 / 不内联 211204，横贯谱线**都是 60 行**；
+    > 最小复现里 `#id path{stroke:currentColor}` 生效，而把选择器改成不匹配的 `#nope`
+    > 则一个像素都不画 —— 证明它真的在做 CSS 选择器匹配，不是"默认给了黑描边"。
+    > 因此 `inline_stroke_attributes()` 现在是**冗余但无害**的保险（只在元素没有显式
+    > `stroke` 时才补，幂等、不覆盖 Verovio 指定的颜色），保留它可以让程序在 Qt < 6.12
+    > 上照常工作。**`tests/test_m4_playback.py` 里那条反向护栏测试已按 Qt 版本分两路改写**
+    > （`< 6.12` 断言"不内联必须看不见"、`>= 6.12` 断言"不内联也看得见"），
+    > 两路都在断言可观测事实，任一侧翻转即失败。
 11. **`PlayerState` 的值必须是 Qt 枚举的成员名（大写）** ——
     `str(QMediaPlayer.PlaybackState.PlayingState)` 得到 `"PlaybackState.PlayingState"`，
     最后一段是 **`PlayingState`**（大写 P），不是 `playingState`。

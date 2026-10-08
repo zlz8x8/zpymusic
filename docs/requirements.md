@@ -90,22 +90,83 @@
 
 > **重要**：现有样本全部是 `.mxl`（ZIP 压缩包），且 `META-INF/container.xml` 指向的根文件命名不统一（`score.xml` 或 `lg-*.xml`）。因此**解析层必须先按 ZIP 容器规范解出真正的根 XML**，不能假设文件名。
 
-### 3.2 待新增依赖
+### 3.1.1 当前环境（2026-10-08 运行环境升级复验）
 
-| 依赖 | 用途 | 结论 / 依据 |
+> §3.1 与附录 A 是 **M0 阶段的历史实测记录**（当时为 Python 3.13.16 / PySide6 6.9.3），
+> 原样保留以便追溯。本节记录**当前生效**的环境与升级后的全量复验结果。
+
+解释器路径未变（仍是 `C:\miniconda3\envs\ibase\python.exe`），版本已升级：
+
+| 项 | 当前值 |
+| :--- | :--- |
+| Python | **3.14.7**（Anaconda 打包，`MSC v.1942 64 bit (AMD64)`；构建串为 `main, Aug 14 2026` —— 这是**解释器构建日期**，**不是**本次复验日期） |
+| Qt | **6.12.0**（`PySide6.QtCore.qVersion()`） |
+| PySide6 | **6.12.0**：`PySide6_Essentials` / `PySide6_Addons` 6.12.0、`PySide6_WebEngine` 6.12.0.140、`PySide6_Pdf` 6.12.0.140、`shiboken6` 6.12.0 |
+| 核心依赖 | `verovio 6.3.0`、`music21 10.5.0`、`pyfluidsynth 1.4.0`、`mido 1.3.3` —— 前三项即 §3.2 原「待新增依赖」，**现已全部安装到位** |
+| 科学计算 | `numpy 2.5.3`、`scipy 1.18.1` |
+| 测试 | `pytest 9.1.1`、`pytest-qt 4.5.0`；`setuptools 84.0.0` |
+| 外部工具 | FluidSynth 2.6.1（`tools/fluidsynth/`）、ffmpeg `N-122544-g8966101fa6-20260125`（含 `libmp3lame`）、MuseScore 4 —— 路径与 §3.3 一致，均未变动 |
+| 未安装（可选） | `pypdf` / `pypdfium2`（仅 M5 的 `pdf → svg` 需要，按需安装，缺失时程序给明确提示，不阻塞其他功能） |
+
+**兼容性结论**：`pyproject.toml` 的 `requires-python = ">=3.11"` 无需修改，已被 3.14 满足；
+`verovio 6.3.0` 提供的是 `cp310-abi3` 稳定 ABI 轮子，在 CPython 3.14 上照常导入与运行。
+
+**升级后复验（全部通过）**
+
+| 检查 | 命令 | 结果 |
 | :--- | :--- | :--- |
-| **`verovio`** | MusicXML → SVG（音符级 ID）、MusicXML → MIDI、时间轴 | **核心新增依赖，强烈推荐。** PyPI 有 Windows 预编译轮子（实测解析到 `verovio-6.3.0-cp310-abi3-win_amd64.whl`，`abi3` 兼容 Python 3.13，无需编译器） |
-| **`music21`** | MIDI → MusicXML、调性/结构分析、乐理级校验 | 反向转换主力（当前 PyPI 10.5.0） |
-| **`pyfluidsynth`** | MIDI → WAV/MP3（SoundFont 渲染） | 纯 Python 包（1.4.0），需配套 `libfluidsynth` 动态库（见 §3.3、风险 R1） |
-| `pypdf` / `pypdfium2`（可选） | PDF 元数据读取、PDF 内嵌 MusicXML 附件提取 | 仅 PDF 相关高级功能需要 |
+| 依赖自检 | `python -m zpymusic probe` | 6/6 可用 |
+| 套件交叉验收 | `python tools/verify_suites.py` | 10/10 套件、**43281 个事件 100% 命中**；MIDI 同源误差 2–16 ms |
+| M4 播放冒烟 | `python tools/smoke_play.py <套件>` | `canon-in-d-easy`、`the-four-seasons-complete` 各 **28/28** |
+| GUI 启动 / 自检 | `tools/check_gui_launch.py`；`gui.py --selftest` | 均 PASSED |
+| 端到端生成 | `python -m zpymusic generate <源> -o <绝对路径>` | SVG / MIDI / `sync.json` / MP3 齐全，音频 27.6× 实时 |
+| 单元测试 | `python -m pytest -q` | **370 项全部通过**（0 失败 / 0 跳过 / 0 错误，27 s） |
+
+**两项升级后需要处置的事项**（均**非** 3.14 / 6.12 引入的功能性回归）：
+
+1. **护栏测试前提失效，已按 Qt 版本改写**：`tests/test_m4_playback.py::TestStaffLinesRender::test_without_inline_stroke_lines_are_missing`
+   原断言"不内联 `stroke` 时谱线必须不可见"，用于反证 §12.4 的 `inline_stroke` 修补必要性。
+   经对照实验确认，**Qt 6.12.0 的 QtSvg 已支持内嵌 CSS 规则并解析 `currentColor`**，
+   该前提不再成立（内联 211651 vs 不内联 211204 深色像素，横贯谱线均为 60 行；
+   最小复现中改变 CSS 选择器可精确控制是否成像）。
+   现改为 `qt_svg_applies_embedded_css()` 分两路断言（`< 6.12` 断言不可见、`>= 6.12`
+   断言可见），两路都断言可观测事实。程序渲染功能正常，
+   `inline_stroke_attributes()` 成为**冗余但无害**的兼容保险（保留以支持 Qt < 6.12）。
+2. **相对输出目录导致音频渲染失败（尚未修改）**：`-o` 传相对路径时 `fluidsynth` 报
+   `fluid_is_soundfont(): fopen() failed`。根因是 `core/audio_render.py` 为定位同级 DLL
+   把子进程 `cwd` 设为 `tools/fluidsynth/`，相对路径的 `.mid` 因此被解析到该目录下。
+   **传绝对路径即正常**。与 Python / Qt 版本无关，属既有路径处理缺陷。
+
+另：Qt 6.12 的 SVG 解析器会新增两类**无害**告警（两种平台下表现一致、像素输出无差异）：
+`QFont::setPointSizeF: Point size <= 0`（源于 Verovio 自己输出的 `font-size="0px"`
+占位标签）与 `Could not add child element to parent element`（源于 Verovio 的嵌套 `<tspan>`）。
+实测谱面渲染完全正常（符头 / 谱线 / 谱号 / 拍号 / 力度记号均正确成像）。
+
+### 3.2 新增依赖落地情况（原「待新增依赖」）
+
+> 本节原为 M0 的**待办**清单。其中三项**已全部落地并跑通**（版本见 §3.1.1）；
+> 只剩 PDF 相关的可选依赖尚未安装。表格改为按**状态**记录，保留原有的取舍依据。
+
+| 依赖 | 用途 | 状态 | 结论 / 依据 |
+| :--- | :--- | :--- | :--- |
+| **`verovio`** | MusicXML → SVG（音符级 ID）、MusicXML → MIDI、时间轴 | ✅ **已安装 6.3.0** | **核心依赖。** Windows 预编译轮子 `verovio-6.3.0-cp310-abi3-win_amd64.whl`；`abi3` 稳定 ABI，实测在 CPython 3.13 与 **3.14.7** 上均照常导入、无需编译器 |
+| **`music21`** | MIDI → MusicXML（推断性）、调性/结构分析 | ✅ **已安装 10.5.0** | 反向转换主力，由 `core/convert.py` 的 `("midi","musicxml")` 路径使用（`converter.parse` + `write("musicxml")`）；`import` 需数百毫秒，故 UI 侧只用 `_has_module()` 探测、不 import |
+| **`pyfluidsynth`** | MIDI → WAV/MP3（SoundFont 渲染） | ✅ **已安装 1.4.0** | 已装但**实际音频链路不用它**：Windows 上即使把 DLL 目录加入搜索路径，`import fluidsynth` 仍不稳定，故改走 `fluidsynth.exe -a file` 离线渲染（见 §12、风险 R1） |
+| `pypdf` / `pypdfium2`（可选） | PDF 元数据读取、PDF 内嵌 MusicXML 附件提取 | ⬜ **未安装**（可选） | 仅 `pdf → svg` 需要。代码已优雅降级：`core/convert.py` 在缺失时抛出明确提示（`pip install pypdf`；或 `pypdfium2` 走位图方案，非矢量）。**属按需安装，不阻塞其他功能** |
 
 **不推荐**：`midi2audio`（2019 年后基本停更），直接用 `pyfluidsynth` 或 `fluidsynth` 命令行更可控。
 **不必要**：`pydub`（只是 ffmpeg 的封装，本项目直接调 ffmpeg 子进程即可，少一层依赖）。
 
-安装命令（在 `ibase` 环境）：
+三项核心依赖的安装命令（在 `ibase` 环境，**M0 已执行完毕**，留档备查）：
 
 ```powershell
 C:\miniconda3\envs\ibase\python.exe -m pip install verovio music21 pyfluidsynth
+```
+
+若后续要用 M5 的 `pdf → svg`，再按需补装：
+
+```powershell
+C:\miniconda3\envs\ibase\python.exe -m pip install pypdf
 ```
 
 ### 3.3 外部工具与配置探测
@@ -1105,7 +1166,7 @@ ERROR:gpu_channel_manager.cc(967) ContextResult::kFatalFailure:
 并把"程序自动设置软件渲染"当成修复。而用户报告：**本机 GPU 与驱动都正常，
 其他项目（`pyqt6-tutorial` 的 `webview.py` / `browser.py`）用 `QWebEngineView` 从不报错。**
 
-**对照实验**（同一台机器、同一解释器，PySide6 6.9.3 / Qt 6.9.3，加载同一套件前 6 行 SVG）：
+**对照实验**（同一台机器、同一解释器，**当时**为 PySide6 6.9.3 / Qt 6.9.3，加载同一套件前 6 行 SVG；当前环境见 §3.1.1）：
 
 | 实验 | 环境 | GPU 报错 | 谱面 |
 | :--- | :--- | :--- | :--- |
@@ -1190,7 +1251,7 @@ WebEngine 分支除了"能不能启动"之外从没被真正用过，「适应�
 | `sync/local_server.py` | `#systems` 的 `align-items:center` → `safe center`（保留 `center` 作回退）：谱面比视口宽时，普通 center 会把溢出平均分到两侧，左侧一截被裁掉且滚不回来 |
 | `tests/test_webengine_env.py` | 新增 25 项：`REQUIRED_VIEW_API` 逐名对照两个后端、`_fit_width` 默认值一致、缩放区间共用、适应宽度算式、页面 CSS 护栏；另在 `tests/test_m6_view_fixes.py` 增补 1 项**不锁定后端**的端到端首屏用例，以及 `tests/conftest.py` 的"测试不得改写 `config.json`"护栏（`MainWindow.closeEvent()` 会 `config.save()`，会把测试里钉的后端持久化） |
 
-**回归测试口径**：总计 **364 项**（本次 +26），并且在**两种环境各跑一遍都必须通过** ——
+**回归测试口径**：总计 **364 项**（本次 +26；**当前环境为 370 项全部通过，见 §3.1.1**），并且在**两种环境各跑一遍都必须通过** ——
 ① 受限沙箱（Chromium 起不来 → `auto` 回退原生）；② 可启动 Chromium（走 `WebScoreView`）。
 新加的端到端用例刻意不锁定后端，只断言两个后端都必须满足的不变量，
 否则"默认后端是 `auto`"这件事会让测试随环境摇摆（本次就撞到过一次）。
@@ -1215,6 +1276,10 @@ WebEngine 分支除了"能不能启动"之外从没被真正用过，「适应�
 ---
 
 ## 附录 A：环境实测记录
+
+> **历史记录（M0 阶段）** —— 下表反映的是开工时的环境（Python 3.13.16 / PySide6 6.9.3，
+> 且当时尚未安装 verovio / music21 / pyfluidsynth）。**当前生效环境见 §3.1.1**（2026-10-08 升级为
+> Python 3.14.7 / PySide6 6.12.0）。本附录刻意保持原样以保留决策依据。
 
 | 检查项 | 命令 / 方法 | 结果 |
 | :--- | :--- | :--- |
@@ -1264,7 +1329,8 @@ WebEngine 分支除了"能不能启动"之外从没被真正用过，「适应�
 
 ## 附录 D：Verovio 实测数据（M0 探针）
 
-环境：verovio 6.3.0 / Python 3.13.16 / Windows，样本取自 `staff/musicxml/`。
+环境（**M0 探针当时**）：verovio 6.3.0 / Python 3.13.16 / Windows，样本取自 `staff/musicxml/`。
+（当前环境已升级为 Python 3.14.7 / PySide6 6.12.0，verovio 仍为 6.3.0；复验结果见 §3.1.1。）
 
 ### D.1 timemap 结构
 

@@ -1,9 +1,15 @@
 """M4 两个"看着像没实现、其实是状态判断错了"的 bug 的回归测试。
 
 **Bug 1（谱线不可见）**：Verovio 的谱线是只带 ``stroke-width`` 的 ``<path>``，
-颜色来自内嵌 CSS ``#id path {stroke:currentColor}``，而 QtSvg 不套用该规则。
+颜色来自内嵌 CSS ``#id path {stroke:currentColor}``，而**当年的** QtSvg 不套用该规则。
 不内联 stroke 时，符头（实心字形）可见、**五线谱的线全部消失**。
 → 测试 :func:`inline_stroke_attributes` 与 ``flatten_svg``。
+
+.. note::
+   **Qt 6.12.0 起该上游限制已修复** —— QtSvg 开始套用内嵌 CSS 并解析 ``currentColor``，
+   于是"不内联就看不见"这个前提不再成立（``inline_stroke`` 变成冗余但无害的兼容保险）。
+   :meth:`TestStaffLinesRender.test_without_inline_stroke_lines_are_missing`
+   因此按 Qt 版本分两路断言，详见该测试的 docstring。
 
 **Bug 2（播放不高亮、不跟随）**：``PlayerState`` 的值曾写成小写
 ``"playingState"``，而 ``str(QMediaPlayer.PlaybackState.PlayingState)`` 得到的是
@@ -26,6 +32,23 @@ from zpymusic.sync.svg_geometry import flatten_svg, inline_stroke_attributes
 REPO = Path(__file__).resolve().parents[1]
 SVG = REPO / "staff" / "suites" / "canon-in-d-easy" / "svg" / "sys-0001.svg"
 needs_svg = pytest.mark.skipif(not SVG.is_file(), reason="需要先生成套件")
+
+
+def qt_version_tuple() -> tuple[int, ...]:
+    """当前 Qt 版本号，形如 ``(6, 12, 0)``；解析不出的段直接忽略。"""
+    from PySide6.QtCore import qVersion
+
+    return tuple(int(p) for p in qVersion().split(".") if p.isdigit())
+
+
+def qt_svg_applies_embedded_css() -> bool:
+    """QtSvg 是否已套用内嵌 CSS 规则并解析 ``currentColor``。
+
+    **分界版本是 Qt 6.12.0**：此前的 QtSvg 只支持 SVG Tiny 1.2 的子集，
+    不套用 ``#id path {stroke:currentColor}``，因此 Verovio 的谱线（只带
+    ``stroke-width``、颜色靠 CSS）会整条消失；6.12 起该限制被上游修复。
+    """
+    return qt_version_tuple() >= (6, 12)
 
 
 # ===========================================================================
@@ -107,13 +130,42 @@ class TestStaffLinesRender:
         return QSvgRenderer(svg_text.encode("utf-8")).defaultSize().width()
 
     def test_without_inline_stroke_lines_are_missing(self, qapp) -> None:  # noqa: ANN001
-        """反向验证：不内联 stroke 时谱线确实会消失（说明这个修复是必要的）。"""
+        """反向验证：确认「不内联 stroke 谱线就不可见」这个前提**是否仍然成立**。
+
+        这条测试的用途是给 ``flatten_svg(inline_stroke=True)`` 的必要性提供**反证**。
+        但那个缺陷是 **QtSvg 的上游限制**，而 Qt 6.12.0 已把它修好（QtSvg 开始套用
+        内嵌 CSS 并解析 ``currentColor``）。所以这里按版本分两路断言：
+
+        * **Qt < 6.12**：不内联 → 谱线确实不可见（内联修复仍然必要，原始断言）；
+        * **Qt >= 6.12**：不内联 → 谱线照样可见（内联成为**冗余但无害**的兼容保险；
+          保留它是为了让程序在旧 Qt 上照常工作）。
+
+        两路都在断言**可观测事实**，任一侧翻转都会失败：既守住旧版行为，
+        也能在上游行为再次变化时立刻发现（而不是让测试悄悄失去意义）。
+
+        实测依据（Qt 6.12.0，``the-four-seasons-complete/svg/sys-0001.svg``）：
+        内联 211651 深色像素 / 不内联 211204，横贯谱线**均为 60 行**；
+        最小复现中把 CSS 选择器改成不匹配的 ``#nope`` 则一个像素都不画 ——
+        证明它真的在做选择器匹配，而不是"默认补了黑描边"。
+        """
+        from PySide6.QtCore import qVersion
+
         text = SVG.read_text(encoding="utf-8")
         no_inline = flatten_svg(text, inline_stroke=False)
         assert 'stroke="currentColor"' not in no_inline
         _dark, rows = self._render(no_inline)
         wide = [y for y, c in enumerate(rows) if c > 400]
-        assert len(wide) < 5, "预期不内联 stroke 时谱线不可见（否则本测试失去意义）"
+        if qt_svg_applies_embedded_css():
+            assert len(wide) >= 5, (
+                f"Qt {qVersion()} 的 QtSvg 本应套用内嵌 CSS（不内联也能画出谱线），"
+                f"实际只有 {len(wide)} 条横贯行 —— 上游行为可能又变了，"
+                f"请复核 inline_stroke 的必要性"
+            )
+        else:
+            assert len(wide) < 5, (
+                f"预期 Qt {qVersion()}（< 6.12）不内联 stroke 时谱线不可见"
+                f"（否则本测试失去意义），实际有 {len(wide)} 条横贯行"
+            )
 
     def test_noteheads_visible_in_both_cases(self, qapp) -> None:  # noqa: ANN001
         """符头无论是否内联 stroke 都应可见（说明"看得见音符"不能作为渲染正常的证据）。"""
