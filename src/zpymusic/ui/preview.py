@@ -119,6 +119,19 @@ def _cache_key(path: Path, extra: str = "") -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
+def _rel_to(root: Path, file: Path) -> str:
+    """``file`` 相对资源根目录 ``root`` 的路径（正斜杠，供 :class:`SystemRef` 用）。
+
+    ``SystemRef.file`` 的约定是"相对套件目录"（如 ``svg/sys-0001.svg``），
+    两个后端都按这个约定拼路径 / 发 URL。对"文件就在根目录下"的情况
+    （单独预览一个 .svg）返回纯文件名。
+    """
+    try:
+        return file.relative_to(root).as_posix()
+    except ValueError:  # 不在根目录下（理论上不该发生）→ 退回文件名
+        return file.name
+
+
 class _PreviewDialog(QDialog):
     """预览窗口基类：非模态、关闭时只隐藏（实例由调用方复用）。"""
 
@@ -222,7 +235,16 @@ class ScorePreviewWindow(_PreviewDialog):
             return
 
         width, height = svg_size(text)
-        refs = [SystemRef(index=1, file=path.name, width=width, height=height, note_ids=[])]
+        refs = [
+            SystemRef(
+                index=1,
+                # 根目录就是该 SVG 的所在目录，因此 ``file`` 是纯文件名
+                file=_rel_to(path.parent, path),
+                width=width,
+                height=height,
+                note_ids=[],
+            )
+        ]
         self.score_view.load(path.parent, refs)
         self.stack.setCurrentIndex(0)
 
@@ -239,7 +261,8 @@ class ScorePreviewWindow(_PreviewDialog):
     # ------------------------------------------------------------------ MusicXML
     def _render_musicxml(self, path: Path) -> None:
         cache = PREVIEW_DIR / "score" / _cache_key(path, f"n{self.max_systems}")
-        cached = sorted(cache.glob("sys-*.svg"))
+        # 行 SVG 一律放在 ``<cache>/svg/`` 下（老缓存是平铺的，一并认，免得白渲染一遍）
+        cached = sorted((cache / "svg").glob("sys-*.svg")) or sorted(cache.glob("sys-*.svg"))
         if cached:
             self._load_rendered(path, cached, cached=True)
             return
@@ -255,7 +278,14 @@ class ScorePreviewWindow(_PreviewDialog):
         self._job.start()
 
     def _render_worker(self, path: Path, cache: Path) -> list[Path]:
-        """工作线程：渲染前 N 行并落盘（Verovio 每个线程用各自的 toolkit）。"""
+        """工作线程：渲染前 N 行并落盘（Verovio 每个线程用各自的 toolkit）。
+
+        ⚠ 落盘目录与 ``SystemRef.file`` 的相对路径必须对上：行 SVG 放进
+        ``<cache>/svg/``，``file`` 就是 ``svg/sys-0001.svg``（与套件目录同构），
+        页面按 ``/sys/svg/sys-0001.svg`` 请求、原生后端按 ``<root>/<file>`` 读文件。
+        预览缓存原先平铺在 ``<cache>/``，于是"预览完成 12 行"紧接着就是
+        "曲谱页面有 12 行加载失败：原因=HTTP 404"——服务端一个文件都找不到。
+        """
         doc = read_musicxml(path)
         svgs = render_preview_svgs(
             doc.xml_bytes,
@@ -264,10 +294,11 @@ class ScorePreviewWindow(_PreviewDialog):
             # 后台线程渲染必须显式给资源目录（见 core.score_render.verovio_resource_path）
             resources=self.config.paths.verovio_resources,
         )
-        cache.mkdir(parents=True, exist_ok=True)
+        svg_dir = cache / "svg"
+        svg_dir.mkdir(parents=True, exist_ok=True)
         out: list[Path] = []
         for i, text in enumerate(svgs, 1):
-            f = cache / f"sys-{i:04d}.svg"
+            f = svg_dir / f"sys-{i:04d}.svg"
             f.write_text(text, encoding="utf-8")
             out.append(f)
         return out
@@ -283,6 +314,11 @@ class ScorePreviewWindow(_PreviewDialog):
         self._load_rendered(path, [Path(x) for x in result], cached=False)  # type: ignore[arg-type]
 
     def _load_rendered(self, path: Path | None, svgs: list[Path], *, cached: bool) -> None:
+        # 根目录取行 SVG 的**上一级**（预览缓存里就是 <cache>，行在 <cache>/svg/ 下），
+        # 这样 SystemRef.file（相对根目录，如 ``svg/sys-0001.svg``）与套件目录完全同构：
+        # 原生后端读 ``<root>/<file>``，WebEngine 后端请求 ``/sys/<file>``。
+        # 旧缓存的平铺布局也走同一条规则（此时 file 就是纯文件名）。
+        root = svgs[0].parent.parent if svgs else PREVIEW_DIR
         refs = []
         for i, f in enumerate(svgs, 1):
             try:
@@ -290,9 +326,11 @@ class ScorePreviewWindow(_PreviewDialog):
             except OSError:
                 width = height = 0
             refs.append(
-                SystemRef(index=i, file=f.name, width=width, height=height, note_ids=[])
+                # ``file`` 必须是**相对资源根目录**的路径（套件里是 ``svg/sys-0001.svg``）：
+                # 只给文件名的话，原生后端找不到文件、WebEngine 后端会请求到根目录下
+                # → 整屏"行加载失败 HTTP 404"。
+                SystemRef(index=i, file=_rel_to(root, f), width=width, height=height, note_ids=[])
             )
-        root = svgs[0].parent if svgs else PREVIEW_DIR
         self.score_view.load(root, refs)
         self.stack.setCurrentIndex(0)
         total = len(svgs)

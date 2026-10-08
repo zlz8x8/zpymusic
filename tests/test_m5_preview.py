@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from zpymusic.common.config import AppConfig
+from zpymusic.sync.local_server import LocalAssetServer
 from zpymusic.ui.preview import (
     PREVIEW_AUDIO_SUFFIXES,
     PREVIEW_SCORE_SUFFIXES,
@@ -229,6 +230,57 @@ class TestScorePreviewWindow:
             assert win.stack.currentIndex() == 0, f"渲染应成功，状态：{win.lbl_status.text()}"
             assert len(win.score_view.systems) == 2, "应按 max_systems 截断"
             assert (tmp_path / "score").is_dir(), "应把渲染结果写进预览缓存目录"
+        finally:
+            win.close()
+            win.shutdown()
+
+    @needs_musicxml
+    def test_preview_cache_layout_is_servable(
+        self, qapp, tmp_path: Path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        """预览缓存必须能被资源服务取到（回归：换套件后整屏"行加载失败 HTTP 404"）。
+
+        事故：预览把行 SVG 平铺写进 ``<cache>/``，而
+        :class:`~zpymusic.sync.local_server.LocalAssetServer` 按 ``/svg/<名字>``
+        取文件（即 ``<root>/svg/<名字>``，套件目录天生如此）。于是 WebEngine 后端
+        每一行都 404 —— 日志同时出现"MusicXML 预览完成：… 12 行"与
+        "曲谱页面有 12 行加载失败 … HTTP 404"。
+        """
+        import urllib.parse
+        import urllib.request
+
+        import zpymusic.ui.preview as preview_mod
+
+        monkeypatch.setattr(preview_mod, "PREVIEW_DIR", tmp_path)
+
+        win = ScorePreviewWindow(_config(), None, _LogDock(), max_systems=1)
+        try:
+            win.open_file(MUSICXML_DIR / "canon-in-d-easy.mxl")
+            for _ in range(400):
+                qapp.processEvents()
+                if win._job is None:
+                    break
+                threading.Event().wait(0.02)
+            assert win._job is None and win.stack.currentIndex() == 0, "渲染应成功"
+
+            # ``file`` 是**相对资源根目录**的路径（与套件里的 "svg/sys-0001.svg" 同构），
+            # 两个后端都靠它拼真实路径；只给文件名会让原生后端也找不到文件。
+            ref = win.score_view.systems[0]
+            root = Path(win.score_view.root)  # type: ignore[arg-type]
+            assert (root / ref.file).is_file(), f"行 SVG 应落在 {root / ref.file}"
+            assert ref.file.startswith("svg/"), "相对套件目录的路径应带 svg/ 前缀"
+
+            # 真的按服务端的两条 URL 规则各请求一次：布局不对就会 404
+            srv = LocalAssetServer(root)
+            try:
+                base = srv.start()
+                rel = urllib.parse.quote(ref.file, safe="/")  # 页面 JS 就是这么编码的
+                for url in (f"{base}/sys/{rel}", f"{base}/svg/{Path(ref.file).name}"):
+                    with urllib.request.urlopen(url, timeout=10) as r:
+                        assert r.status == 200, url
+                        assert b"<svg" in r.read(2000), url
+            finally:
+                srv.stop()
         finally:
             win.close()
             win.shutdown()

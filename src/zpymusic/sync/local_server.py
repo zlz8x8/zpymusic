@@ -35,6 +35,16 @@ _ALLOWED_SUFFIXES = frozenset(
     {".svg", ".html", ".htm", ".css", ".js", ".mp3", ".mid", ".midi", ".wav", ".json"}
 )
 
+
+def _rel_path(rest: str) -> Path:
+    """URL 路径里的一段 → 相对资源根目录的 :class:`Path`。
+
+    ``rest`` 是 ``unquote`` 之后的值，可能还带子目录（``svg/sys-0001.svg``）。
+    **不做**任何"去掉 .."的清理：越界由 :meth:`_Handler._resolve` 统一拒绝
+    （``resolve()`` 之后必须仍在根目录内）。
+    """
+    return Path(rest)
+
 #: WebEngine 后端加载的页面（内嵌，避免额外资源文件）
 PAGE_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -88,13 +98,21 @@ window.__zpyState = { ready:false, mounted:[], active:[], server:0, measure:null
 
 function baseUrl() { return window.__zpyBase || ""; }
 
+/* 行 SVG 的 URL：file 是**相对套件目录**的路径（如 "svg/sys-0001.svg"）。
+   逐段 encodeURIComponent —— 这样 "svg" 与文件名里的空格/特殊字符都能安全传输，
+   同时保留目录分隔符（整串编码会把 "/" 编成 %2F，服务端就找不到文件）。
+   服务端 /sys/<相对路径> 就是按这个约定解析的。 */
+function systemUrl(file) {
+  return baseUrl() + "/sys/" + String(file).split("/").map(encodeURIComponent).join("/");
+}
+
 function makeSystemBlock(index, file, width, height) {
   const d = document.createElement("div");
   d.className = "sys pending";
   d.id = "sys-" + index;
   d.dataset.index = index;
   d.dataset.file = file;
-  d.dataset.src = baseUrl() + "/svg/" + encodeURIComponent(file.split("/").pop());
+  d.dataset.src = systemUrl(file);
   if (width)  d.style.minHeight = Math.round(height || 0) + "px";
   d.dataset.loaded = "0";
   return d;
@@ -337,6 +355,14 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/svg/"):
             name = path[len("/svg/") :]
             self._send_file(root / "svg" / name)
+            return
+
+        if path.startswith("/sys/"):
+            # 行 SVG 的**相对套件目录**路径（``svg/sys-0001.svg``）。
+            # 套件与预览缓存的目录层级可能不同（预览缓存把行放在 <cache>/svg/ 下
+            # 只是为了共用 /svg/ 这条路由），所以不能假设一定在 svg/ 里。
+            # 越界与后缀白名单由 :meth:`_resolve` 兜住。
+            self._send_file(root / _rel_path(path[len("/sys/") :]))
             return
 
         if path.startswith("/audio"):

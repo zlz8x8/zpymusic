@@ -940,7 +940,8 @@ M4 做同步播放时，为了把高亮框画在正确的音符上，必须拿�
 **需求变更**：源文件「选择…」按钮**左侧**增加「预览」按钮；没选文件时不可用，
 选了 `musicxml / svg / midi / mp3` 才可用。MusicXML/SVG → 非模态窗口**显示**文件；
 MIDI/MP3 → 非模态窗口**播放**，带停止 / 播放按钮。
-回归测试见 `tests/test_m5_preview.py`（44 项），目视验收工具 `tools/check_preview_windows.py`。
+回归测试见 `tests/test_m5_preview.py`（44 项）、无 Qt 的 URL 路由用例
+`tests/test_local_server.py`（5 项），目视验收工具 `tools/check_preview_windows.py`。
 
 **实现**：
 
@@ -951,6 +952,7 @@ MIDI/MP3 → 非模态窗口**播放**，带停止 / 播放按钮。
 | `ui/score_host.py`（新增） | 把 `ScoreViewHost`（曲谱视图 + 浮动缩放条）从 `tab_play` 抽出来共用，预览窗口因此免费得到"适应宽度 / 缩放 / 按行懒加载"；`tab_play` 仍 `from .score_host import ScoreViewHost` 再导出，旧导入路径不变 |
 | `core/score_render.py` | 新增 `render_preview_svgs()`（只渲染前 `PREVIEW_MAX_SYSTEMS=12` 行、不导出 MIDI/时间轴、不要求"有音符"、强制逐行排版）与 `svg_size()`；新增 `verovio_resource_path()` / `_prepare_toolkit()` |
 | `common/paths.py` | 新增 `TMP_DIR`（`.zpy-tmp`）与 `PREVIEW_DIR`（预览缓存）；`.gitignore` 一并忽略 |
+| `tests/test_m5_preview.py` | 44 项。其中 `test_preview_cache_layout_is_servable` 守住"预览缓存能被资源服务取到"（见 12.9.1） |
 
 **几个实测结论**（都写进了代码注释与测试）：
 
@@ -979,6 +981,49 @@ MIDI/MP3 → 非模态窗口**播放**，带停止 / 播放按钮。
 **窗口参数**：乐谱窗口 1000×640，默认显示前 12 行（canon 这类小曲目会全部显示：
 实测 4 行 ≈ 0.2 s，缓存命中后 < 30 ms）；音频窗口 560×170，含播放/暂停、停止、
 进度条（可拖动 seek）与时间显示，打开即自动开始播放。
+
+#### 12.9.1 修掉"预览完成 12 行"却"12 行加载失败 HTTP 404"（关键坑）
+
+**现象**（`logs/zpymusic_20261008.log`，Vivaldi / the-four-seasons）：
+
+```text
+INFO  zpymusic.ui.preview        曲谱视图后端：QWebEngineView（DOM 高亮）
+INFO  zpymusic.ui.preview        渲染 MusicXML 预览：the-four-seasons-complete.mxl
+INFO  zpymusic.sync.local_server 资源服务根目录已切换为 ...\.zpy-tmp\preview\score\316cbf895ece
+INFO  zpymusic.ui.preview        MusicXML 预览完成：the-four-seasons-complete.mxl，12 行
+DEBUG zpymusic.sync.local_server HTTP "GET /svg/sys-0001.svg HTTP/1.1" 404 -
+...
+WARNING zpymusic.sync.web_view   曲谱页面有 4 行加载失败：
+WARNING zpymusic.sync.web_view     行 1  原因=HTTP 404  URL=http://127.0.0.1:11621/svg/sys-0001.svg
+```
+
+**根因**：WebEngine 后端取行 SVG 的 URL 约定是 `SystemRef.file` = **相对套件目录**的路径
+（套件里是 `svg/sys-0001.svg`）。预览窗口两处都违反了它：
+
+| 违约点 | 旧行为 | 后果 |
+| :--- | :--- | :--- |
+| 缓存落盘位置 | 行 SVG 平铺在 `<cache>/`（套件是 `<suite>/svg/`） | 请求 `/svg/sys-0001.svg` 会落到 `<cache>/svg/sys-0001.svg`，文件不在那儿 |
+| `SystemRef.file` | 只给文件名 `sys-0001.svg`，根目录给 `<cache>` | 原生后端找 `<cache>/sys-0001.svg`（不存在）；WebEngine 请求到根目录下（不存在） |
+
+两个后端因此**整屏都取不到行**（原生后端只在日志里留 `缺少 system SVG：…`，界面是空白）。
+
+**修正**（三处，缺一不可）：
+
+1. `ui/preview.py` 预览缓存落盘到 `<cache>/svg/`（与套件同构）；
+2. `SystemRef.file` 改为**相对资源根目录**的路径（`svg/sys-0001.svg`）；
+3. `sync/local_server.py` 新增 `/sys/<相对路径>` 路由（页面按它拼 URL，
+   逐段 `encodeURIComponent`，保留 `/`）—— `/svg/<名字>` 作为旧路由继续保留，
+   `tools/diagnose_asset_server.py` 等既有调用不受影响；越界与扩展名白名单仍由
+   `_resolve()` 统一拒绝。
+
+**回归测试**：`tests/test_m5_preview.py::TestScorePreviewWindow::test_preview_cache_layout_is_servable`
+（真的起一个 `LocalAssetServer`，按两条 URL 规则各请求一次，断言 200 + `<svg`）与
+`tests/test_local_server.py`（`/sys/` 相对路径解析、根目录平铺文件、`..` 越界拒绝、
+扩展名白名单、`/svg/` 旧路由不回归）。
+
+> 顺带说明：同一段日志里的 `[Error] Bravura font could not be loaded.` **与本故障无关**，
+> 它是 Verovio 在部分平台上会打印的告警（`loadData()` 返回真值、SVG 内容完整），
+> 留档在 12.9 §3；排障时不要被它带偏——行 SVG 明明渲染出来了，问题在"取不到文件"。
 
 ### 12.10 M5：格式转换（F3.1–F3.7 全量落地）
 

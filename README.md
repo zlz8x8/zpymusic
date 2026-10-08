@@ -356,6 +356,15 @@ $env:QT_QPA_PLATFORM = "offscreen"; & $py tools\smoke_play.py the-four-seasons-c
     排障时可用 `native` 从根上避开这一类问题。
     若确实要用浏览器引擎，排障看日志里 `曲谱页面有 N 行加载失败` 那几行
     （会打印每行的失败原因与 URL），或直接跑 `tools/diagnose_web_switch.py`。
+14. **行 SVG 的 URL 约定：`SystemRef.file` 是"相对套件目录"的路径**（`svg/sys-0001.svg`），
+    两个后端都按它定位：原生后端读 `<root>/<file>`，WebEngine 后端请求
+    `/sys/<相对路径>`（旧路由 `/svg/<名字>` 仍在）。**不要**只传文件名、
+    也不要假设行文件一定在 `svg/` 下。踩坑记录：源文件预览把行平铺写进预览缓存根目录、
+    又只给文件名，于是日志同时打印"MusicXML 预览完成：… 12 行"与
+    "曲谱页面有 12 行加载失败：原因=HTTP 404" —— 服务端一个文件都找不到。
+    现在预览缓存写成 `<cache>/svg/`（与套件同构），回归测试
+    `tests/test_m5_preview.py::…test_preview_cache_layout_is_servable`
+    与 `tests/test_local_server.py`（含 `..` 越界与扩展名白名单）。
 15. **换默认后端 = 换实现：两个后端的接口必须逐名对齐** —— `ui/score_host.py` 用
     `hasattr` 探测曲谱视图的能力，**缺方法不报错、只是静默降级**。把默认后端从
     `native` 改成 `auto` 之后立刻踩到：`WebScoreView` 没实现
